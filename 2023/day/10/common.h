@@ -106,7 +106,7 @@ size_t array_list_sizet_get(ArrayListSizeT *list, size_t index);
 void array_list_sizet_clear(ArrayListSizeT *list);
 bool array_list_sizet_contains(ArrayListSizeT *list, size_t value);
 
-// Object pool (void)
+// Object pool (void *)
 
 typedef void (*ObjectPoolObjectInitFn)(void* obj);
 

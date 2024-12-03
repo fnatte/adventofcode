@@ -245,28 +245,33 @@ void object_pool_init(ObjectPool *pool, size_t obj_size, size_t cap, ObjectPoolO
   pool->cap = cap;
   pool->len = 0;
   pool->obj_size = obj_size;
-  pool->arr = scalloc(obj_size, cap);
+  pool->arr = smalloc(cap * obj_size);
+  for (size_t i = 0; i < cap; i++) {
+    pool->obj_init_fn((char *)pool->arr + i * pool->obj_size);
+  }
   array_list_sizet_init(&pool->free_list, cap);
 }
 
 void *object_pool_get(ObjectPool *pool) {
   if (pool->free_list.len > 0) {
     size_t index = array_list_sizet_pop(&pool->free_list);
-    return &pool->arr[index];
+    return (char *)pool->arr + index * pool->obj_size;
   }
 
   if (pool->len >= pool->cap) {
     pool->cap *= 2;
-    pool->arr = realloc(pool->arr, pool->obj_size * pool->cap);
+    pool->arr = srealloc(pool->arr, pool->cap * pool->obj_size);
     for (size_t i = pool->len; i < pool->cap; i++) {
-      pool->obj_init_fn(&pool->arr[i]);
+      pool->obj_init_fn((char *)pool->arr + i * pool->obj_size);
     }
   }
 
-  void *obj = &pool->arr[pool->len];
+  void *obj = (char *)pool->arr + pool->len * pool->obj_size;
   pool->len++;
   return obj;
 }
 
 void object_pool_put(ObjectPool *pool, void *obj) {
+  (void)pool;
+  (void)obj;
 }

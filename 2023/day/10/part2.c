@@ -27,10 +27,10 @@ typedef struct PipePosition {
   char pipe;
 } PipePosition;
 
-typedef enum Direction { UP, DOWN, LEFT, RIGHT } Direction;
+typedef enum FlowDirection { ALL, UP, DOWN, LEFT, RIGHT } Direction;
 
 typedef struct Flow {
-  Position pos;
+  size_t index;
   Direction dir;
 } Flow;
 
@@ -70,11 +70,23 @@ bool is_vertical(char pipe) {
 }
 
 bool is_vertical_left(char pipe) {
-  return pipe == '|' || pipe == 'J' || pipe == '7' || pipe == 'S';
+  return pipe == '|' || pipe == 'J' || pipe == '7' || pipe == 'S' ||
+         pipe == '.';
 }
 
 bool is_vertical_right(char pipe) {
-  return pipe == '|' || pipe == 'L' || pipe == 'F' || pipe == 'S';
+  return pipe == '|' || pipe == 'L' || pipe == 'F' || pipe == 'S' ||
+         pipe == '.';
+}
+
+bool is_horizontal_up(char pipe) {
+  return pipe == '-' || pipe == 'J' || pipe == 'L' || pipe == 'S' ||
+         pipe == '.';
+}
+
+bool is_horizontal_down(char pipe) {
+  return pipe == '-' || pipe == 'F' || pipe == '7' || pipe == 'S' ||
+         pipe == '.';
 }
 
 void connected_pipes(char *input, size_t input_len, size_t line_len, Position p,
@@ -170,6 +182,7 @@ void get_pipeline(char *input, size_t input_len, size_t line_len,
     if (cur_pipe->pipe == 'S') {
       if (pipeline->len != 1) {
         debug("Found start pipe at step %zu\n", pipeline->len);
+        array_list_pop(pipeline);
         break;
       }
 
@@ -190,6 +203,12 @@ void get_pipeline(char *input, size_t input_len, size_t line_len,
       debug("Following pipe %c\n", pipe2.pipe);
     }
   }
+}
+
+static inline void object_pool_flow_init(void *obj) {
+  Flow *flow = obj;
+  flow->index = 0;
+  flow->dir = ALL;
 }
 
 int main(int argc, char *argv[]) {
@@ -240,10 +259,12 @@ int main(int argc, char *argv[]) {
   }
 
   // Find all tiles outside the pipeline
+  ObjectPool flow_pool = {0};
+  object_pool_init(&flow_pool, sizeof(Flow), 200000, object_pool_flow_init);
   ArrayListSizeT outside = {0};
   array_list_sizet_init(&outside, 1000);
-  ArrayListSizeT stack = {0};
-  array_list_sizet_init(&stack, 1000);
+  ArrayList stack = {0};
+  array_list_init(&stack, 1000);
   ArrayListSizeT visited = {0};
   array_list_sizet_init(&visited, 1000);
 
@@ -252,85 +273,134 @@ int main(int argc, char *argv[]) {
     size_t left = idx(x, 0, line_len);
     size_t right = idx(x, lines - 1, line_len);
     if (pipe_by_idx[left] == NULL) {
-      array_list_sizet_push(&stack, left);
+      Flow *flow = object_pool_get(&flow_pool);
+      flow->index = left;
+      flow->dir = ALL;
+      array_list_push(&stack, flow);
     }
     if (pipe_by_idx[right] == NULL) {
-      array_list_sizet_push(&stack, right);
+      Flow *flow = object_pool_get(&flow_pool);
+      flow->index = right;
+      flow->dir = ALL;
+      array_list_push(&stack, flow);
     }
   }
   for (size_t y = 0; y < lines - 1; y++) {
     size_t top = idx(0, y, line_len);
     size_t bottom = idx(line_len - 1, y, line_len);
     if (pipe_by_idx[top] == NULL) {
-      array_list_sizet_push(&stack, top);
+      Flow *flow = object_pool_get(&flow_pool);
+      flow->index = top;
+      flow->dir = ALL;
+      array_list_push(&stack, flow);
     }
     if (pipe_by_idx[bottom] == NULL) {
-      array_list_sizet_push(&stack, bottom);
+      Flow *flow = object_pool_get(&flow_pool);
+      flow->index = bottom;
+      flow->dir = ALL;
+      array_list_push(&stack, flow);
     }
   }
 
   // Flood fill
   while (stack.len > 0) {
-    size_t i = array_list_sizet_pop(&stack);
-    if (array_list_sizet_contains(&visited, i)) {
+    Flow *flow = array_list_pop(&stack);
+    if (array_list_sizet_contains(&visited, flow->index)) {
       continue;
     }
-    array_list_sizet_push(&visited, i);
-    if (pipe_by_idx[i] == NULL) {
-      array_list_sizet_push(&outside, i);
+    array_list_sizet_push(&visited, flow->index);
+    if (pipe_by_idx[flow->index] == NULL) {
+      array_list_sizet_push(&outside, flow->index);
     }
 
-    Position p = pos(i, line_len);
-    debug("Pop %zu, %zu (%c)\n", p.x, p.y, input[i]);
+    Position p = pos(flow->index, line_len);
 
-    if (p.x > 0) {
+    if (p.x > 0 && flow->dir != RIGHT) {
       // Left
       size_t left_idx = idx(p.x - 1, p.y, line_len);
       if (pipe_by_idx[left_idx] == NULL) {
-        array_list_sizet_push(&stack, left_idx);
+        Flow *f = object_pool_get(&flow_pool);
+        f->index = left_idx;
+        f->dir = ALL;
+        array_list_push(&stack, f);
         debug("Push %zu, %zu (%c) (left)\n", p.x - 1, p.y, input[left_idx]);
       }
       // Check squeeze
-      // else if (input[left_idx] == '-' &&
-      //          ((p.y > 0 && input[idx(p.x - 1, p.y - 1, line_len)] == '-') ||
-      //           (p.y < lines - 1 &&
-      //            input[idx(p.x - 1, p.y + 1, line_len)] == '-'))
+      else if (p.x > 0 && (flow->dir == ALL || flow->dir == DOWN) &&
+               is_horizontal_up(input[left_idx]) &&
+               is_horizontal_down(input[idx(p.x - 1, p.y - 1, line_len)])) {
+        printf("Squeeze down at %zu, %zu (%c) (up)\n", p.x, p.y - 1,
+               input[left_idx]);
+        Flow *f = object_pool_get(&flow_pool);
+        f->index = left_idx;
+        f->dir = DOWN;
+        array_list_push(&stack, f);
+      } else if (p.x < line_len - 1 && (flow->dir == ALL || flow->dir == UP) &&
+                 is_horizontal_up(input[left_idx]) &&
+                 is_horizontal_down(input[idx(p.x - 1, p.y + 1, line_len)])
 
-      // ) {
-      //   array_list_sizet_push(&stack, left_idx);
-      // }
+      ) {
+        printf("Squeeze up at %zu, %zu (%c) (up)\n", p.x, p.y - 1,
+               input[left_idx]);
+        Flow *f = object_pool_get(&flow_pool);
+        f->index = left_idx;
+        f->dir = UP;
+        array_list_push(&stack, f);
+      }
     }
     // Right
-    if (p.x < line_len - 1) {
+    if (p.x < line_len - 1 && flow->dir != LEFT) {
       size_t right_idx = idx(p.x + 1, p.y, line_len);
       if (pipe_by_idx[right_idx] == NULL) {
-        array_list_sizet_push(&stack, right_idx);
+        Flow *f = object_pool_get(&flow_pool);
+        f->index = right_idx;
+        f->dir = ALL;
+        array_list_push(&stack, f);
         debug("Push %zu, %zu (%c) (right)\n", p.x + 1, p.y, input[right_idx]);
       }
     }
     // Up
-    if (p.y > 0) {
+    if (p.y > 0 && flow->dir != DOWN) {
       size_t up_idx = idx(p.x, p.y - 1, line_len);
       if (pipe_by_idx[up_idx] == NULL) {
-        array_list_sizet_push(&stack, up_idx);
+        Flow *f = object_pool_get(&flow_pool);
+        f->index = up_idx;
+        f->dir = f->dir;
+        array_list_push(&stack, f);
         debug("Push %zu, %zu (%c) (up)\n", p.x, p.y - 1, input[up_idx]);
       }
       // Check squeeze
-      else if ((p.x > 0 && is_vertical_right(input[up_idx]) &&
-                is_vertical_left(input[idx(p.x - 1, p.y - 1, line_len)])) ||
-               (p.x < line_len - 1 && is_vertical_left(input[up_idx]) &&
-                is_vertical_right(input[idx(p.x + 1, p.y - 1, line_len)]))
+      else if (p.x > 0 && (flow->dir == ALL || flow->dir == LEFT) &&
+               is_vertical_right(input[up_idx]) &&
+               is_vertical_left(input[idx(p.x - 1, p.y - 1, line_len)])) {
+        printf("Squeeze left at %zu, %zu (%c) (up)\n", p.x, p.y - 1,
+               input[up_idx]);
+        Flow *f = object_pool_get(&flow_pool);
+        f->index = up_idx;
+        f->dir = LEFT;
+        array_list_push(&stack, f);
+      } else if (p.x < line_len - 1 &&
+                 (flow->dir == ALL || flow->dir == RIGHT) &&
+                 is_vertical_left(input[up_idx]) &&
+                 is_vertical_right(input[idx(p.x + 1, p.y - 1, line_len)])
 
       ) {
-        printf("Squeeze at %zu, %zu (%c) (up)\n", p.x, p.y - 1, input[up_idx]);
-        array_list_sizet_push(&stack, up_idx);
+        printf("Squeeze right at %zu, %zu (%c) (up)\n", p.x, p.y - 1,
+               input[up_idx]);
+        Flow *f = object_pool_get(&flow_pool);
+        f->index = up_idx;
+        f->dir = RIGHT;
+        array_list_push(&stack, f);
       }
     }
     // Down
-    if (p.y < lines - 1) {
+    if (p.y < lines - 1 && flow->dir != UP) {
       size_t down_idx = idx(p.x, p.y + 1, line_len);
       if (pipe_by_idx[down_idx] == NULL) {
-        array_list_sizet_push(&stack, down_idx);
+        Flow *f = object_pool_get(&flow_pool);
+        f->index = down_idx;
+        f->dir = ALL;
+        array_list_push(&stack, f);
         debug("Push %zu, %zu (%c) (down)\n", p.x, p.y + 1, input[down_idx]);
       }
     }
@@ -343,7 +413,41 @@ int main(int argc, char *argv[]) {
   for (size_t i = 0; i < outside.len; i++) {
     output[outside.arr[i]] = 'O';
   }
+  for (size_t i = 0; i < pipeline.len; i++) {
+    PipePosition *pipe = array_list_get(&pipeline, i);
+    output[idx(pipe->pos.x, pipe->pos.y, line_len)] = ' ';
+  }
+  for (size_t i = 0; i < input_len; i++) {
+    if (output[i] == '\n') {
+      continue;
+    }
+    bool is_outside = false;
+    for (size_t j = 0; j < outside.len; j++) {
+      if (outside.arr[j] == i) {
+        is_outside = true;
+        printf("IS OUTSIDE\n");
+        break;
+      }
+    }
+    bool is_pipeline = false;
+    for (size_t j = 0; j < pipeline.len; j++) {
+      PipePosition *pipe = array_list_get(&pipeline, j);
+      if (idx(pipe->pos.x, pipe->pos.y, line_len) == i) {
+        is_pipeline = true;
+        printf("IS PIPELINE\n");
+        break;
+      }
+    }
+    if (!is_outside && !is_pipeline) {
+      printf("IS INSIDE\n");
+      output[i] = 'X';
+    }
+  }
   printf("%s", output);
+
+  // Count all tiles inside the pipeline
+  size_t inside_count = (line_len * lines) - (pipeline.len + outside.len);
+  printf("Inside: %zu\n", inside_count);
 
   free(input);
 
